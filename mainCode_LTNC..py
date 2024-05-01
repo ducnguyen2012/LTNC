@@ -1,0 +1,676 @@
+import RPi.GPIO as GPIO 
+import smbus 
+import time
+import datetime
+
+#! hàng này để làm gì ta? 
+button_press_time = 0
+gio_bao_thuc = 0
+phut_bao_thuc = 0
+giay_bao_thuc = 0
+# Cac chan LCD
+#! ------------- các chân ở trong LCD mình phải cài đặt ---------------
+LCD_RS = 5
+LCD_E  = 6
+LCD_D4 = 12
+LCD_D5 = 13
+LCD_D6 = 16
+LCD_D7 = 19
+LED_ANODE = 27
+#! --------------------------------------------------------
+# Cac hang so su dung cho LCD
+LCD_WIDTH = 16    # So luong ký tu hien thi trên 1 hàng = MAX = 16
+LCD_CHR = True	  # LCD nhận dữ liệu dạng ký tự (LCD_ character)
+LCD_CMD = False	  # Chân lua chon thanh ghi du li?u (DATA Register) hoac thanh ghi lenh (Instruction Register) H: Data register, L: Instruction Register --> Ghi vào chân RS
+ 
+LCD_LINE_1 = 0x80 # Địa chỉ ghi LCD cho dòng 1
+LCD_LINE_2 = 0xC0 # Địa chỉ ghi LCD cho dòng 2
+ 
+# Hang so thoi gian
+E_PULSE = 0.0005
+E_DELAY = 0.0005
+
+start_stop_pin = 21
+mode_pin = 26
+light_pin = 20
+
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)       # Use BCM GPIO numbers
+GPIO.setup(LCD_E, GPIO.OUT)  # E
+GPIO.setup(LCD_RS, GPIO.OUT) # RS
+GPIO.setup(LCD_D4, GPIO.OUT) # DB4
+GPIO.setup(LCD_D5, GPIO.OUT) # DB5
+GPIO.setup(LCD_D6, GPIO.OUT) # DB6
+GPIO.setup(LCD_D7, GPIO.OUT) # DB7
+GPIO.setup(LED_ANODE, GPIO.OUT) # LED_ANODE
+
+GPIO.setup(start_stop_pin, GPIO.IN)
+GPIO.setup(mode_pin, GPIO.IN)
+GPIO.setup(light_pin, GPIO.IN)
+
+DS1307 = 0x68 # DIA CHI CUA DS1307	sudo i2cdetect -y 1
+bus = smbus.SMBus(1)
+#các hàm s? d?ng trong truy?n thông I2C 
+#write_byte(addr,val) g?i 1 byte d? li?u
+#read_byte(addr) d?c 1 byte d? li?u
+#write_i2c_block_data(addr,cmd,vals) g?i m?ng d? li?u
+#read_i2c_block_data(addr,cmd)
+def BCD2DEC(bcd): 
+ # dec = (((bcd>>4)&0x07)*10 + bcd&0x0F)
+ dec = ((bcd//16)*10 + bcd%16) 
+ return dec 
+def DEC2BCD(dec): 
+ bcd = (dec//10)*16 + dec%10
+ return bcd
+
+def PC_time():
+   dt_now = datetime.datetime.now()
+   return dt_now.hour, dt_now.minute, dt_now.second, dt_now.day, dt_now.month, int(str(dt_now.year)[-2:])
+   
+def setDS1307(hour, minute, second, day, month, year):
+   bus.write_byte_data(DS1307, 0x00, DEC2BCD(second))
+   bus.write_byte_data(DS1307, 0x01, DEC2BCD(minute))
+   bus.write_byte_data(DS1307, 0x02, DEC2BCD(hour))
+   bus.write_byte_data(DS1307, 0x04, DEC2BCD(day))
+   bus.write_byte_data(DS1307, 0x05, DEC2BCD(month))
+   bus.write_byte_data(DS1307, 0x06, DEC2BCD(year))
+def readDS1307(): 
+ bus.write_byte(DS1307,0x00) 
+ data = bus.read_i2c_block_data(DS1307,0x00,0x07) 
+ second = BCD2DEC(data[0]) 
+ minute = BCD2DEC(data[1]) 
+ hour = BCD2DEC(data[2]) 
+ wday = BCD2DEC(data[3]) 
+ day = BCD2DEC(data[4]) 
+ month = BCD2DEC(data[5]) 
+ year = BCD2DEC(data[6])
+ year += 2000
+ return hour, minute, second, day, month, year
+
+def str_time(hour, minute, second, day, month, year):
+ if hour < 10:
+    standard_hour =  f"0{hour}"
+ else:
+    standard_hour =  str(hour)
+    
+ if minute < 10:
+    standard_minute =  f"0{minute}"
+ else:
+    standard_minute =  str(minute)
+    
+ if second < 10:
+    standard_second =  f"0{second}"
+ else:
+    standard_second =  str(second)
+    
+ if day < 10:
+    standard_day =  f"0{day}"
+ else:
+    standard_day =  str(day)
+    
+ if month < 10:
+    standard_month =  f"0{month}"
+ else:
+    standard_month =  str(month)
+  
+ clock = standard_hour + ":" + standard_minute + ":" + standard_second
+ ngay_hien_tai = standard_day + "/" + standard_month + "/" + str(year)
+ return clock,ngay_hien_tai
+   
+def lcd_init():
+  # Initialise display
+  lcd_byte(0x33,LCD_CMD) # 110011 Khoi tao
+  lcd_byte(0x32,LCD_CMD) # 110010 Khoi tao
+  lcd_byte(0x06,LCD_CMD) # 000110 Con tro di chuyen truc tiep
+  lcd_byte(0x0C,LCD_CMD) # 001100 Hien thi ky tu, tat con tro, tat nhap nhay
+  lcd_byte(0x28,LCD_CMD) # 101000 Chieu dai du lieu, so luong dong, kich co font
+  lcd_byte(0x01,LCD_CMD) # 000001 Xoa man hinh
+  time.sleep(E_DELAY)
+ 
+def lcd_byte(bits, mode):
+  # Gui byte den cac chan data
+  # bits = data
+  # mode = True  cho ky tu
+  #        False cho lenh
+ 
+  GPIO.output(LCD_RS, mode) # RS
+ 
+  # High bits
+  GPIO.output(LCD_D4, False)
+  GPIO.output(LCD_D5, False)
+  GPIO.output(LCD_D6, False)
+  GPIO.output(LCD_D7, False)
+  if bits&0x10==0x10:
+    GPIO.output(LCD_D4, True)
+  if bits&0x20==0x20:
+    GPIO.output(LCD_D5, True)
+  if bits&0x40==0x40:
+    GPIO.output(LCD_D6, True)
+  if bits&0x80==0x80:
+    GPIO.output(LCD_D7, True)
+ 
+  # Toggle 'Enable' pin
+  lcd_toggle_enable()
+ 
+  # Low bits
+  GPIO.output(LCD_D4, False)
+  GPIO.output(LCD_D5, False)
+  GPIO.output(LCD_D6, False)
+  GPIO.output(LCD_D7, False)
+  if bits&0x01==0x01:
+    GPIO.output(LCD_D4, True)
+  if bits&0x02==0x02:
+    GPIO.output(LCD_D5, True)
+  if bits&0x04==0x04:
+    GPIO.output(LCD_D6, True)
+  if bits&0x08==0x08:
+    GPIO.output(LCD_D7, True)
+ 
+  # Toggle 'Enable' pin
+  lcd_toggle_enable()
+ 
+def lcd_toggle_enable():
+  # Toggle enable
+  time.sleep(E_DELAY)
+  GPIO.output(LCD_E, True)
+  time.sleep(E_PULSE)
+  GPIO.output(LCD_E, False)
+  time.sleep(E_DELAY)
+ 
+def lcd_string(message,line):
+  # Gui ky tu den LCD
+  message = message.ljust(LCD_WIDTH," ")
+  lcd_byte(line, LCD_CMD)
+ 
+  for i in range(LCD_WIDTH):
+    lcd_byte(ord(message[i]),LCD_CHR)
+
+# Hàm de lay thoi gian nhan nút
+def get_button_press_time(pin):
+    # Ðoi nút duoc nhan
+    global button_press_time
+    start = time.time_ns()
+    end = 0
+
+    while GPIO.input(pin) == 0:
+      end = time.time_ns()
+      button_press_time = (end-start)/(10**9)
+
+def is_leap_year(year):
+   if (year % 4 == 0) and (year % 100 != 0) or (year % 400 == 0):
+      return True
+   else:
+      return False
+    
+def standard_time(hour, minute, second, day, month, year):
+   if second > 59:
+      second = second - 60
+
+   if minute > 59:
+      minute = minute - 60
+
+   if hour > 23:
+      hour = hour - 24
+
+   if month == 1 or month == 3 or month == 5 or month == 7 or month == 8 or month == 10 or month == 12:
+    if day > 31:
+      day = day - 31
+
+   if month == 4 or month == 6 or month == 9 or month == 11:
+    if day > 30:
+      day = day - 30
+
+   if month == 2 and is_leap_year(year):
+    if day > 29:
+      day = day - 29
+
+   if month == 2 and is_leap_year(year) == 0:
+    if day > 28:
+      day = day - 28
+
+   if month > 12:
+      month = month - 12
+      
+   if second < 0:
+      second = second + 60
+
+   if minute < 0:
+      minute = minute + 60
+
+   if hour < 0:
+      hour = hour + 24
+
+   return hour, minute, second, day, month, year
+   
+   
+def sua_thoi_gian(hour, minute, second, day, month, year):
+   global button_press_time	 
+   lcd_byte(0x0F,0)	#Hien thi ký tu, con tro nhap nháy
+   lcd_byte(0x02,0)	#Ðua con tro ve goc
+   for i in range(6):  
+    lcd_byte(0x14,0)
+   lcd_byte(0x06,0)	#Chon che do sau khi ghi ky tu len LCD, con tro dich chuyen sang phai  
+   set_mode = 0
+   while (1):
+    if GPIO.input(mode_pin) == 0:
+      button_press_time = 0
+      lcd_byte(0x0C,0)	#Tat con tro
+      setDS1307(hour, minute, second, day, month, int(str(year)[-2:]))
+      break
+    if GPIO.input(light_pin) == 0:
+     get_button_press_time(light_pin)
+     if button_press_time > 0.2:
+      button_press_time = 0
+      set_mode += 1
+      if set_mode == 6:
+       set_mode = 0
+      lcd_byte(0x02,0)	#Ðua con tro ve goc
+      if set_mode == 0:
+       for i in range(6):  
+        lcd_byte(0x14,0)
+      if set_mode == 1:
+       for i in range(3):  
+        lcd_byte(0x14,0)
+      if set_mode == 3:
+       lcd_byte(0xC0,0)		#Dua con tro xuong dòng 2
+      if set_mode == 4:
+       lcd_byte(0xC0,0)		#Dua con tro xuong dòng 2
+       for i in range(3):  
+        lcd_byte(0x14,0)
+      if set_mode == 5:
+       lcd_byte(0xC0,0)		#Dua con tro xuong dòng 2
+       for i in range(6):  
+        lcd_byte(0x14,0)
+    if set_mode == 0:
+     if GPIO.input(start_stop_pin) == 0:
+      start = time.time_ns()					#*******
+      end = 0							#*******
+      while GPIO.input(start_stop_pin) == 0:			#*******
+       end = time.time_ns()					#*******
+       button_press_time = (end-start)/(10**9)			#*******
+       if button_press_time > 1.5:				#*******
+        second = second + 1					#*******
+        [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)	#******
+        [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)				#******
+        lcd_byte(0x0C, 0)		# Bat hien thi ky tu, tat con tro, tat nhap nhay			#******
+        lcd_byte(0x02, 0)											#******
+        for i in range (len(clock)):										#******
+         lcd_byte(ord(clock[i]),LCD_CHR)									#******
+        for i in range(2):  											#******
+         lcd_byte(0x10,0)											#******
+        lcd_byte(0x0F, 0)		# Hien thi ký tu, con tro nhap nháy					#******
+      if button_press_time < 1.5:										#******
+#       button_press_time = 0
+       second = second + 1
+       [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)
+       [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+       lcd_byte(0x02, 0)
+       for i in range (len(clock)):
+        lcd_byte(ord(clock[i]),LCD_CHR)
+       for i in range(2):  
+        lcd_byte(0x10,0)
+    if set_mode == 1:
+     if GPIO.input(start_stop_pin) == 0:
+      start = time.time_ns()					#*******
+      end = 0							#*******
+      while GPIO.input(start_stop_pin) == 0:			#*******
+       end = time.time_ns()					#*******
+       button_press_time = (end-start)/(10**9)			#*******
+       if button_press_time > 1.5:				#*******
+        minute = minute + 1					#*******
+        [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)	#******
+        [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)				#******
+        lcd_byte(0x0C, 0)		# Bat hien thi ky tu, tat con tro, tat nhap nhay			#******
+        lcd_byte(0x02, 0)											#******
+        for i in range (len(clock)):										#******
+         lcd_byte(ord(clock[i]),LCD_CHR)									#******
+        for i in range(5):  											#******
+         lcd_byte(0x10,0)											#******
+        lcd_byte(0x0F, 0)		# Hien thi ký tu, con tro nhap nháy					#******
+      if button_press_time < 1.5:										#******
+#       button_press_time = 0
+       minute = minute + 1
+       [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)
+       [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+       lcd_byte(0x02, 0)
+       for i in range (len(clock)):
+        lcd_byte(ord(clock[i]),LCD_CHR)
+       for i in range(5):  
+        lcd_byte(0x10,0)
+    if set_mode == 2:
+     if GPIO.input(start_stop_pin) == 0:
+      start = time.time_ns()					#*******
+      end = 0							#*******
+      while GPIO.input(start_stop_pin) == 0:			#*******
+       end = time.time_ns()					#*******
+       button_press_time = (end-start)/(10**9)			#*******
+       if button_press_time > 1.5:				#*******
+        hour = hour + 1					#*******
+        [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)	#******
+        [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)				#******
+        lcd_byte(0x0C, 0)		# Bat hien thi ky tu, tat con tro, tat nhap nhay			#******
+        lcd_byte(0x02, 0)											#******
+        for i in range (len(clock)):										#******
+         lcd_byte(ord(clock[i]),LCD_CHR)									#******
+        lcd_byte(0x02, 0)											#******
+        lcd_byte(0x0F, 0)		# Hien thi ký tu, con tro nhap nháy					#******
+      if button_press_time < 1.5:										#******
+#       button_press_time = 0
+       hour = hour + 1
+       [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)
+       [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+       lcd_byte(0x02, 0)
+       for i in range (len(clock)):
+        lcd_byte(ord(clock[i]),LCD_CHR)
+       lcd_byte(0x02, 0)
+    if set_mode == 3:
+     if GPIO.input(start_stop_pin) == 0:
+      start = time.time_ns()					#*******
+      end = 0							#*******
+      while GPIO.input(start_stop_pin) == 0:			#*******
+       end = time.time_ns()					#*******
+       button_press_time = (end-start)/(10**9)			#*******
+       if button_press_time > 1.5:				#*******
+        day = day + 1					#*******
+        [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)	#******
+        [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)				#******
+        lcd_byte(0x0C, 0)		# Bat hien thi ky tu, tat con tro, tat nhap nhay			#******
+        lcd_byte(0x02, 0)											#******
+        lcd_byte(0xC0,0)		#Dua con tro xuong dòng 2						#******
+        for i in range (len(ngay_hien_tai)):										#******
+         lcd_byte(ord(ngay_hien_tai[i]),LCD_CHR)									#******
+        for i in range(10):  											#******
+         lcd_byte(0x10,0)											#******
+        lcd_byte(0x0F, 0)		# Hien thi ký tu, con tro nhap nháy					#******
+      if button_press_time < 1.5:										#******
+#       button_press_time = 0
+       day = day + 1
+       [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)
+       [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+       lcd_byte(0x02, 0)
+       lcd_byte(0xC0,0)		#Dua con tro xuong dòng 2
+       for i in range (len(ngay_hien_tai)):
+        lcd_byte(ord(ngay_hien_tai[i]),LCD_CHR)
+       for i in range(10):  
+        lcd_byte(0x10,0)
+    if set_mode == 4:
+     if GPIO.input(start_stop_pin) == 0:
+      start = time.time_ns()					#*******
+      end = 0							#*******
+      while GPIO.input(start_stop_pin) == 0:			#*******
+       end = time.time_ns()					#*******
+       button_press_time = (end-start)/(10**9)			#*******
+       if button_press_time > 1.5:				#*******
+        month = month + 1					#*******
+        [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)	#******
+        [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)				#******
+        lcd_byte(0x0C, 0)		# Bat hien thi ky tu, tat con tro, tat nhap nhay			#******
+        lcd_byte(0x02, 0)											#******
+        lcd_byte(0xC0,0)		#Dua con tro xuong dòng 2						#******
+        for i in range (len(ngay_hien_tai)):										#******
+         lcd_byte(ord(ngay_hien_tai[i]),LCD_CHR)									#******
+        for i in range(7):  											#******
+         lcd_byte(0x10,0)											#******
+        lcd_byte(0x0F, 0)		# Hien thi ký tu, con tro nhap nháy					#******
+      if button_press_time < 1.5:										#******
+#       button_press_time = 0
+       month = month + 1
+       [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)
+       [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+       lcd_byte(0x02, 0)
+       lcd_byte(0xC0,0)		#Dua con tro xuong dòng 2
+       for i in range (len(ngay_hien_tai)):
+        lcd_byte(ord(ngay_hien_tai[i]),LCD_CHR)
+       for i in range(7):  
+        lcd_byte(0x10,0)
+    if set_mode == 5:
+     if GPIO.input(start_stop_pin) == 0:
+      start = time.time_ns()					#*******
+      end = 0							#*******
+      while GPIO.input(start_stop_pin) == 0:			#*******
+       end = time.time_ns()					#*******
+       button_press_time = (end-start)/(10**9)			#*******
+       if button_press_time > 1.5:				#*******
+        year = year + 1					#*******
+        [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)	#******
+        [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)				#******
+        lcd_byte(0x0C, 0)		# Bat hien thi ky tu, tat con tro, tat nhap nhay			#******
+        lcd_byte(0x02, 0)											#******
+        lcd_byte(0xC0,0)		#Dua con tro xuong dòng 2						#******
+        for i in range (len(ngay_hien_tai)):										#******
+         lcd_byte(ord(ngay_hien_tai[i]),LCD_CHR)									#******
+        for i in range(4):  											#******
+         lcd_byte(0x10,0)											#******
+        lcd_byte(0x0F, 0)		# Hien thi ký tu, con tro nhap nháy					#******
+      if button_press_time < 1.5:										#******
+#       button_press_time = 0
+       year = year + 1
+       [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)
+       [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+       lcd_byte(0x02, 0)
+       lcd_byte(0xC0,0)		#Dua con tro xuong dòng 2
+       for i in range (len(ngay_hien_tai)):
+        lcd_byte(ord(ngay_hien_tai[i]),LCD_CHR)
+       for i in range(4):  
+        lcd_byte(0x10,0)
+
+def hien_thi_bam_gio():
+   global button_press_time
+   while (1):
+    lcd_string("Stop Watch",LCD_LINE_1)
+    lcd_string("00:00:00.000", LCD_LINE_2)
+    if GPIO.input(start_stop_pin) == 0:
+     get_button_press_time(start_stop_pin)
+     lcd_string(str(button_press_time), LCD_LINE_2)
+     if button_press_time > 0.2:
+      break
+   start = 0
+   end = 0
+   thoi_gian_chay = 0
+
+   start = time.time_ns()
+   while (1):
+     end = time.time_ns()
+     thoi_gian_chay = int((end-start)/(10**6))
+     #lcd_string(str(thoi_gian_chay),LCD_LINE_1)
+     gio_cua_thoi_gian_chay = int(thoi_gian_chay/1000/60/60)
+     phut_cua_thoi_gian_chay = int(thoi_gian_chay/1000/60) - gio_cua_thoi_gian_chay*60
+     giay_cua_thoi_gian_chay = int(thoi_gian_chay/1000) - gio_cua_thoi_gian_chay*60*60 - phut_cua_thoi_gian_chay*60
+     tictac_cua_thoi_gian_chay = thoi_gian_chay - gio_cua_thoi_gian_chay*60*60*1000 - phut_cua_thoi_gian_chay*60*1000 - giay_cua_thoi_gian_chay*1000
+     
+     lcd_string(str(gio_cua_thoi_gian_chay) + ":" + str(phut_cua_thoi_gian_chay) + ":" + str(giay_cua_thoi_gian_chay) + "." + str(tictac_cua_thoi_gian_chay),LCD_LINE_2)
+     if GPIO.input(mode_pin) == 0:
+      start = time.time_ns()
+     if GPIO.input(start_stop_pin) == 0:
+      get_button_press_time(start_stop_pin)
+      if button_press_time > 0.2:
+       button_press_time = 0
+       break
+     if GPIO.input(light_pin) == 0:
+      break
+   while (1):
+     if GPIO.input(light_pin) == 0:
+      button_press_time = 0
+      break
+
+def hen_gio():
+   global button_press_time
+   global gio_bao_thuc
+   global phut_bao_thuc
+   global giay_bao_thuc
+   hour = 0
+   minute = 0
+   second = 0
+   day = 0
+   month = 0
+   year = 0
+
+   vi_tri_con_tro = 0
+   lcd_string("SET ALARM",LCD_LINE_1)
+   lcd_string("00:00:00", LCD_LINE_2)
+   lcd_byte(0x0F,0)	#Hien thi ký tu, con tro nhap nháy
+   lcd_byte(0x02,0)	#Ðua con tro ve goc
+   lcd_byte(0xC0,0)	#Ðua con tro xuong dòng 2
+   for i in range(6):  
+    lcd_byte(0x14,0)
+   lcd_byte(0x06,0)	#Chon che do sau khi ghi ky tu len LCD, con tro dich chuyen sang phai 
+   while (1):
+    if GPIO.input(light_pin) == 0:
+     get_button_press_time(light_pin)
+     if button_press_time > 0.2:
+      vi_tri_con_tro += 1
+      if vi_tri_con_tro == 3:
+       vi_tri_con_tro = 0
+      lcd_byte(0x02,0)	#Ðua con tro ve goc
+      lcd_byte(0xC0,0)	#Ðua con tro xuong dòng 2
+     
+      if vi_tri_con_tro == 0:
+       for i in range(6):  
+        lcd_byte(0x14,0)
+      if vi_tri_con_tro == 1:
+       for i in range(3):  
+        lcd_byte(0x14,0)
+
+    if vi_tri_con_tro == 0:
+     if GPIO.input(start_stop_pin) == 0:
+      start = time.time_ns()					#*******
+      end = 0							#*******
+      while GPIO.input(start_stop_pin) == 0:			#*******
+       end = time.time_ns()					#*******
+       button_press_time = (end-start)/(10**9)			#*******
+       if button_press_time > 1.5:				#*******
+        second = second + 1					#*******
+        [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)	#******
+        [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)				#******
+        lcd_byte(0x0C, 0)		# Bat hien thi ky tu, tat con tro, tat nhap nhay			#******
+        lcd_byte(0x02, 0)											#******
+        lcd_byte(0xC0, 0)											#******
+        for i in range (len(clock)):										#******
+         lcd_byte(ord(clock[i]),LCD_CHR)									#******
+        for i in range(2):  											#******
+         lcd_byte(0x10,0)											#******
+        lcd_byte(0x0F, 0)		# Hien thi ký tu, con tro nhap nháy					#******
+      if button_press_time < 1.5:										#******
+       second = second + 1
+       [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)
+       [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+       lcd_byte(0x02, 0)
+       lcd_byte(0xC0,0)	#Ðua con tro xuong dòng 2
+       for i in range (len(clock)):
+        lcd_byte(ord(clock[i]),LCD_CHR)
+       for i in range(2):  
+        lcd_byte(0x10,0)
+    if vi_tri_con_tro == 1:
+     if GPIO.input(start_stop_pin) == 0:
+      start = time.time_ns()					#*******
+      end = 0							#*******
+      while GPIO.input(start_stop_pin) == 0:			#*******
+       end = time.time_ns()					#*******
+       button_press_time = (end-start)/(10**9)			#*******
+       if button_press_time > 1.5:				#*******
+        minute = minute + 1					#*******
+        [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)	#******
+        [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)				#******
+        lcd_byte(0x0C, 0)		# Bat hien thi ky tu, tat con tro, tat nhap nhay			#******
+        lcd_byte(0x02, 0)		#Ðua con tro ve goc							#******
+        lcd_byte(0xC0, 0)		#Ðua con tro xuong dòng 2						#******
+        for i in range (len(clock)):										#******
+         lcd_byte(ord(clock[i]),LCD_CHR)									#******
+        for i in range(5):  											#******
+         lcd_byte(0x10,0)											#******
+        lcd_byte(0x0F, 0)		# Hien thi ký tu, con tro nhap nháy					#******
+      if button_press_time < 1.5:										#******
+       minute = minute + 1
+       [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)
+       [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+       lcd_byte(0x02, 0)
+       lcd_byte(0xC0,0)	#Ðua con tro xuong dòng 2
+       for i in range (len(clock)):
+        lcd_byte(ord(clock[i]),LCD_CHR)
+       for i in range(5):  
+        lcd_byte(0x10,0)
+    if vi_tri_con_tro == 2:
+     if GPIO.input(start_stop_pin) == 0:
+      start = time.time_ns()					#*******
+      end = 0							#*******
+      while GPIO.input(start_stop_pin) == 0:			#*******
+       end = time.time_ns()					#*******
+       button_press_time = (end-start)/(10**9)			#*******
+       if button_press_time > 1.5:				#*******
+        hour = hour + 1					#*******
+        [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)	#******
+        [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)				#******
+        lcd_byte(0x0C, 0)		# Bat hien thi ky tu, tat con tro, tat nhap nhay			#******
+        lcd_byte(0x02, 0)		#Ðua con tro ve goc							#******
+        lcd_byte(0xC0, 0)		#Ðua con tro xuong dòng 2						#******
+        for i in range (len(clock)):										#******
+         lcd_byte(ord(clock[i]),LCD_CHR)									#******
+        for i in range(8):  											#******
+         lcd_byte(0x10,0)											#******
+        lcd_byte(0x0F, 0)		# Hien thi ký tu, con tro nhap nháy					#******
+      if button_press_time < 1.5:										#******
+       hour = hour + 1
+       [hour, minute, second, day, month, year] = standard_time(hour, minute, second, day, month, year)
+       [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+       lcd_byte(0x02, 0)
+       lcd_byte(0xC0,0)	#Ðua con tro xuong dòng 2
+       for i in range (len(clock)):
+        lcd_byte(ord(clock[i]),LCD_CHR)
+       for i in range(8):  
+        lcd_byte(0x10,0)
+    if GPIO.input(mode_pin) == 0:
+      get_button_press_time(mode_pin)
+      if button_press_time > 0.2:
+       button_press_time = 0
+       lcd_byte(0x0C,0)	#Tat con tro
+       break
+   gio_bao_thuc = hour
+   phut_bao_thuc = minute
+   giay_bao_thuc = second
+   
+def main():
+  global button_press_time
+  # Khoi tao man hinh LCD
+  lcd_init()
+  [hour, minute, second, day, month, year] = PC_time()
+  setDS1307(hour, minute, second, day, month, year)
+  while True:
+    # Nhan du lieu
+    [hour, minute, second, day, month, year] = readDS1307() 
+    [clock,ngay_hien_tai] = str_time(hour, minute, second, day, month, year)
+
+    # Hien thi
+    lcd_string(clock,LCD_LINE_1)
+    lcd_string(ngay_hien_tai,LCD_LINE_2)
+   
+    if GPIO.input(mode_pin) == 0:
+      get_button_press_time(mode_pin)
+    if button_press_time > 0.5 and button_press_time < 1.5:
+      sua_thoi_gian(hour, minute, second, day, month, year)
+    if button_press_time > 1.5 and button_press_time < 2.5:
+      hen_gio()
+    if button_press_time > 2.5:
+      hien_thi_bam_gio()
+    
+    if gio_bao_thuc == hour and phut_bao_thuc == minute and giay_bao_thuc == second:
+      while (1):
+       GPIO.output(LED_ANODE, 1)
+       time.sleep(0.5)
+       if GPIO.input(light_pin) == 0:
+        GPIO.output(LED_ANODE, 0)
+        break
+       GPIO.output(LED_ANODE, 0)
+       time.sleep(0.5)
+       if GPIO.input(light_pin) == 0:
+        GPIO.output(LED_ANODE, 0)
+        break
+        
+if __name__ == '__main__':
+  try:
+    main()
+  except KeyboardInterrupt:
+    pass
+  finally:
+    lcd_byte(0x01, LCD_CMD)
+    lcd_string("Goodbye!",LCD_LINE_1)
+    GPIO.cleanup()
